@@ -1,0 +1,68 @@
+name: Build Windows app
+
+on:
+  workflow_dispatch:        # run manually: Actions tab -> Build Windows app -> Run workflow
+  push:
+    tags: ['v*']            # or push a tag like v1.0.0 to also publish a GitHub Release
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Install Python dependencies
+        run: pip install -r backend/requirements.txt -r packaging/requirements-desktop.txt
+
+      - name: Build AgentChat.exe
+        run: pyinstaller --noconfirm --clean --distpath release/dist --workpath release/build packaging/AgentChat.spec
+
+      - name: Smoke test the exe
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath release\dist\AgentChat.exe -ArgumentList '--selftest' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Smoke test failed (exit code $($p.ExitCode))" }
+
+      - name: Show app log on failure
+        if: failure()
+        shell: pwsh
+        run: Get-Content "$env:APPDATA\AgentChat\agentchat.log" -ErrorAction SilentlyContinue
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $v = (Get-Content VERSION).Trim()
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$v" packaging\AgentChat.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgentChat-Windows
+          path: |
+            release/AgentChat-Setup-*.exe
+            release/dist/AgentChat.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/AgentChat-Setup-*.exe
+            release/dist/AgentChat.exe
